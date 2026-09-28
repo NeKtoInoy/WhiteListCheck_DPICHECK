@@ -2,20 +2,7 @@
 
 Android-приложение, которое одним нажатием определяет, действует ли в вашем регионе режим «белого списка» мобильного интернета.
 
-**Сайт проекта: [belyjspisok.ru](https://belyjspisok.ru/)** · **[Скачать APK (последний релиз)](https://github.com/dmitrystarosta/WhiteListCheck/releases/latest)**
-
-> ### 🧪 Ищу тестировщиков для Google Play
->
-> Приложение готовится к публикации в Google Play. По правилам Google перед
-> выходом в общий доступ его должны две недели протестировать минимум
-> **12 человек** — пока их меньше.
->
-> Помочь просто: установить приложение и не удалять две недели. Открывать
-> необязательно, но замечания приму с благодарностью.
->
-> Напишите на **[belyjspisok@starosta.ru](mailto:belyjspisok@starosta.ru)**
-> ваш **Google-аккаунт** — тот, под которым вы заходите в Google Play на
-> телефоне. Я добавлю вас в список и пришлю ссылку.
+**Сайт проекта: [belyjspisok.ru](https://belyjspisok.ru/)** · **[Google Play](https://play.google.com/store/apps/details?id=ru.netstatus.app)** · **[Скачать APK (последний релиз)](https://github.com/dmitrystarosta/WhiteListCheck/releases/latest)**
 
 ## Когда пригодится
 
@@ -71,7 +58,10 @@ Android-приложение, которое одним нажатием опр�
 ## Установка
 
 <p align="center">
-  <a href="https://github.com/dmitrystarosta/WhiteListCheck/releases/latest"><img src="docs/badges/get-it-on-github.png" alt="Скачать APK с GitHub" title="Скачать APK с GitHub" height="60"></a>&nbsp;&nbsp;<a href="https://www.rustore.ru/catalog/app/ru.netstatus.app"><img src="docs/badges/rustore.png" alt="Скачать из RuStore" title="Скачать из RuStore" height="60"></a>
+  <a href="https://play.google.com/store/apps/details?id=ru.netstatus.app"><img src="docs/badges/google-play.png" alt="Доступно в Google Play" title="Доступно в Google Play" height="60"></a>&nbsp;&nbsp;<a href="https://www.rustore.ru/catalog/app/ru.netstatus.app"><img src="docs/badges/rustore.png" alt="Скачать из RuStore" title="Скачать из RuStore" height="60"></a>
+</p>
+<p align="center">
+  <a href="https://github.com/dmitrystarosta/WhiteListCheck/releases/latest"><img src="docs/badges/get-it-on-github.png" alt="Скачать APK с GitHub" title="Скачать APK с GitHub" height="60"></a>
 </p>
 
 Скачайте файл WhiteListCheck_v… .apk из [Releases](https://github.com/dmitrystarosta/WhiteListCheck/releases/latest), откройте на телефоне и разрешите установку. Требуется Android 8.0+.
@@ -79,13 +69,6 @@ Android-приложение, которое одним нажатием опр�
 **Google Play Protect** предупредит «App blocked» — это стандартно для любых приложений, установленных не из магазина. Нажмите **More details → Install anyway**. Код открыт, можно проверить и собрать самому.
 
 Если у вас установлена версия 0.2 или старше, сначала удалите её: начиная с 0.2.1 приложение подписано новым ключом, и обновление поверх старых версий невозможно.
-
-> **Google Play — скоро.** Приложение уже загружено в Google Play и проходит
-> обязательное закрытое тестирование. Хотите получать обновления оттуда и
-> заодно помочь проекту — пришлите свой Google-аккаунт на
-> [belyjspisok@starosta.ru](mailto:belyjspisok@starosta.ru), добавлю вас в
-> тестировщики. Подпись у сборок во всех магазинах одна, поэтому приложение
-> из Play спокойно встанет поверх версии из RuStore или GitHub.
 
 ## Сборка
 
@@ -102,10 +85,6 @@ Android-приложение, которое одним нажатием опр�
 Нашли ошибку или проверили приложение в своём регионе — расскажите: [Issues](https://github.com/dmitrystarosta/WhiteListCheck/issues) или почта [belyjspisok@starosta.ru](mailto:belyjspisok@starosta.ru).
 
 Особенно ценны отчёты из регионов, где белый список реально включали: какой оператор, что показало приложение, какие сайты открывались.
-
-> И ещё раз про тестирование: если готовы помочь с выходом приложения в
-> Google Play — напишите на [belyjspisok@starosta.ru](mailto:belyjspisok@starosta.ru),
-> нужен ваш Google-аккаунт для добавления в список тестировщиков.
 
 ---
 \** Instagram принадлежит Meta, признанной экстремистской и запрещённой в РФ.
