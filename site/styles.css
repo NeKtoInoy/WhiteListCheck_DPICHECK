@@ -1280,11 +1280,11 @@ footer > div a.footer-external::after{
    сверху, GitHub под ними. Перенос даёт сам бейдж GitHub на всю
    ширину строки — так вертикальный зазор равен горизонтальному
    (отдельная распорка образовала бы третью строку и двойной зазор). */
-.badge-link--break{flex-basis:100%}
-.compact .badge-link--break{display:flex;justify-content:flex-end}
-@media(max-width:900px){
-  .compact .badge-link--break{justify-content:center}
-}
+.badge-link--break{flex-basis:100%;display:flex;justify-content:center}
+
+/* Бейджи центрируются по ширине своего блока в обоих местах. */
+.download-row{justify-content:center}
+.compact{justify-content:center}
 
 /* Правая колонка блока «Конфиденциальность» — по центру высоты. */
 .privacy{align-items:center}
