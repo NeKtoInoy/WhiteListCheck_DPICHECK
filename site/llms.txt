@@ -8,6 +8,7 @@
 - [Карта сайта (sitemap)](https://belyjspisok.ru/sitemap.xml): структура официального сайта.
 - [Официальный репозиторий GitHub](https://github.com/dmitrystarosta/WhiteListCheck): исходный код, документация и актуальное описание функций.
 - [Последние релизы на GitHub](https://github.com/dmitrystarosta/WhiteListCheck/releases): актуальные APK и история изменений.
+- [Страница приложения в Google Play](https://play.google.com/store/apps/details?id=ru.netstatus.app): официальный источник установки приложения.
 - [Страница приложения в RuStore](https://www.rustore.ru/catalog/app/ru.netstatus.app): официальный источник установки приложения.
 
 ## О проекте
