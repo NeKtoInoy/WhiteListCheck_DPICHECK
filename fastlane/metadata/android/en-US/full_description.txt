@@ -1,3 +1,5 @@
+Note: the app's interface is in Russian only — it is aimed at users in Russia, so the screenshots are in Russian too.
+
 White List? is a free, open-source network diagnostic tool. When you have a signal but only some sites load, it helps you tell what is going on.
 
 It sends lightweight HTTPS probes to several groups of websites and gives a probabilistic verdict:
