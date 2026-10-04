@@ -58,9 +58,8 @@ Android-приложение, которое одним нажатием опр�
 ## Установка
 
 <p align="center">
-  <a href="https://play.google.com/store/apps/details?id=ru.netstatus.app"><img src="docs/badges/google-play.png" alt="Доступно в Google Play" title="Доступно в Google Play" height="60"></a>&nbsp;&nbsp;<a href="https://www.rustore.ru/catalog/app/ru.netstatus.app"><img src="docs/badges/rustore.png" alt="Скачать из RuStore" title="Скачать из RuStore" height="60"></a>
-</p>
-<p align="center">
+  <a href="https://play.google.com/store/apps/details?id=ru.netstatus.app"><img src="docs/badges/google-play.png" alt="Доступно в Google Play" title="Доступно в Google Play" height="60"></a><br><br>
+  <a href="https://www.rustore.ru/catalog/app/ru.netstatus.app"><img src="docs/badges/rustore.png" alt="Скачать из RuStore" title="Скачать из RuStore" height="60"></a><br><br>
   <a href="https://github.com/dmitrystarosta/WhiteListCheck/releases/latest"><img src="docs/badges/get-it-on-github.png" alt="Скачать APK с GitHub" title="Скачать APK с GitHub" height="60"></a>
 </p>
 
