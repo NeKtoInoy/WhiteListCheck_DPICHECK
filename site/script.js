@@ -78,3 +78,21 @@ if (gallery && prevButton && nextButton) {
   updateButtons();
   requestAnimationFrame(updateButtons);
 }
+
+
+/* Цели Яндекс.Метрики: клики по плашкам магазинов.
+   Идентификатор берётся из data-goal у ссылки; метрика может быть
+   ещё не загружена (нет согласия) — тогда просто ничего не отправляем. */
+const METRIKA_COUNTER_ID = 110893097;
+
+document.addEventListener('click', (event) => {
+  const link = event.target.closest('[data-goal]');
+  if (!link) return;
+
+  const goal = link.dataset.goal;
+  if (!goal) return;
+
+  if (typeof window.ym === 'function' && window.__belyjspisokMetrikaLoaded) {
+    window.ym(METRIKA_COUNTER_ID, 'reachGoal', goal);
+  }
+});

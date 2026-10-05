@@ -42,6 +42,39 @@
       accurateTrackBounce: true,
       trackLinks: true
     });
+
+    sendTheme();
+    watchTheme();
+  }
+
+  /* Тема оформления посетителя. Переключателя на сайте нет — сайт следует
+     системной настройке, поэтому читаем prefers-color-scheme. Значение
+     уходит параметром визита, а смену темы в течение визита отслеживаем. */
+  function currentTheme() {
+    try {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch (error) {
+      return 'unknown';
+    }
+  }
+
+  function sendTheme() {
+    if (typeof window.ym !== 'function') return;
+    window.ym(METRIKA_ID, 'params', { theme: currentTheme() });
+  }
+
+  function watchTheme() {
+    try {
+      const query = window.matchMedia('(prefers-color-scheme: dark)');
+      const handler = () => sendTheme();
+      if (typeof query.addEventListener === 'function') {
+        query.addEventListener('change', handler);
+      } else if (typeof query.addListener === 'function') {
+        query.addListener(handler);
+      }
+    } catch (error) {
+      // Старые браузеры без matchMedia — просто не отслеживаем смену.
+    }
   }
 
   function removeBanner() {
