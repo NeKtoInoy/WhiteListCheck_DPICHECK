@@ -208,6 +208,10 @@ object DpiProbe {
     }
 
     suspend fun run(ownHost: String, ownPort: Int, ownSni: String, network: String, operator: String): DiagReport {
+        if (network == "VPN" || network == "нет сети") {
+            val (t, x) = verdict(emptyList(), network)
+            return DiagReport(emptyList(), t, x, network, operator, System.currentTimeMillis())
+        }
         val steps: List<DiagStep> = withTimeoutOrNull(TOTAL_MS) {
             coroutineScope {
                 val jobs = mutableListOf<Deferred<List<DiagStep>>>()
@@ -383,6 +387,42 @@ object DiagHolder {
     var running by mutableStateOf(false)
 }
 
+// Запуск диагностики с сохранёнными настройками сервера. Вызывается
+// автоматически вместе с основной проверкой и кнопкой «Повторить».
+fun startDiag(context: Context, scope: CoroutineScope) {
+    if (DiagHolder.running) return
+    val prefs = context.getSharedPreferences("netstatus", Context.MODE_PRIVATE)
+    val host = prefs.getString("diag_host", "")?.trim().orEmpty()
+    val port = prefs.getString("diag_port", "443")?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 443
+    val sni = prefs.getString("diag_sni", "")?.trim().orEmpty()
+    DiagHolder.running = true
+    scope.launch {
+        try {
+            val net = Scanner.networkType(context)
+            val op = if (net == "мобильный интернет") Scanner.operatorName(context) else ""
+            DiagHolder.report = DpiProbe.run(host, port, sni, net, op)
+        } finally {
+            DiagHolder.running = false
+        }
+    }
+}
+
+// Короткая строка-итог под главным вердиктом.
+@Composable
+fun DiagSummary() {
+    val r = DiagHolder.report
+    val running = DiagHolder.running
+    if (r == null && !running) return
+    Text(
+        if (running) "Диагностика: проверяю…" else "Диагностика: ${r!!.verdictTitle}",
+        style = MaterialTheme.typography.bodyMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onBackground,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+    )
+}
+
 // ---------- Интерфейс ----------
 
 private fun outcomeLabel(o: Outcome): String = when (o) {
@@ -413,17 +453,7 @@ fun DiagCard(scope: CoroutineScope, networkType: String, operator: String) {
             .putString("diag_port", p.toString())
             .putString("diag_sni", sni.trim())
             .apply()
-        DiagHolder.running = true
-        scope.launch {
-            try {
-                val net = Scanner.networkType(context)
-                val op = if (net == "мобильный интернет") Scanner.operatorName(context) else ""
-                val r = DpiProbe.run(host.trim(), p, sni.trim(), net, op)
-                DiagHolder.report = r
-            } finally {
-                DiagHolder.running = false
-            }
-        }
+        startDiag(context, scope)
     }
 
     Surface(
@@ -439,8 +469,8 @@ fun DiagCard(scope: CoroutineScope, networkType: String, operator: String) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
-                "Смотрит, на каком этапе рвётся соединение: TCP до IP (белые списки) или TLS по SNI (DPI). " +
-                    "Запускайте без VPN.",
+                "Запускается сама вместе с проверкой. Смотрит, на каком этапе рвётся соединение: " +
+                    "TCP до IP (белые списки) или TLS по SNI (DPI). Нужен выключенный VPN.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp)
@@ -448,7 +478,7 @@ fun DiagCard(scope: CoroutineScope, networkType: String, operator: String) {
 
             Spacer(Modifier.height(8.dp))
             Text(
-                "Ваш сервер (необязательно)",
+                "Свой сервер: заполните один раз, дальше проверяется само (необязательно)",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -484,7 +514,7 @@ fun DiagCard(scope: CoroutineScope, networkType: String, operator: String) {
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp).height(48.dp)
             ) {
                 Text(
-                    if (running) "Диагностика…" else "Запустить диагностику",
+                    if (running) "Диагностика…" else if (report != null) "Повторить диагностику" else "Запустить диагностику",
                     fontWeight = FontWeight.SemiBold
                 )
             }

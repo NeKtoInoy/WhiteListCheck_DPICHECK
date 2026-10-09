@@ -898,6 +898,9 @@ fun MainScreen(
                 // SIM метод вернул бы имя, и оно ложно вылезло бы в чипе).
                 val operator = if (net == "мобильный интернет") Scanner.operatorName(context) else ""
 
+                // Глубокая диагностика (DPI или белые списки) идёт параллельно с проверкой.
+                startDiag(context, scope)
+
                 // Показываем карточки групп СРАЗУ: каждый сайт помечен «проверяется»
                 // (checking=true) — справа от названия крутится индикатор. Проверка
                 // параллельная (как и была); по мере ответа каждого сайта его строка
@@ -1052,6 +1055,7 @@ fun MainScreen(
         Spacer(Modifier.height(8.dp))
 
         VerdictCard(state)
+        DiagSummary()
 
         Spacer(Modifier.height(12.dp))
 
