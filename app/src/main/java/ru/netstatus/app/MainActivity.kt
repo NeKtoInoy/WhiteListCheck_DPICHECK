@@ -493,6 +493,8 @@ class CheckWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
             .putLong("last_check_ts", System.currentTimeMillis())
             .apply()
         StatusWidgetUpdater.update(ctx)
+        // Глубокая диагностика: журнал замеров и уведомление при смене режима.
+        try { DpiExtra.runBackground(ctx) } catch (_: Exception) { }
         return Result.success()
     }
 

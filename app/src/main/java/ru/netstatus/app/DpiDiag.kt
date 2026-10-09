@@ -66,7 +66,8 @@ data class DiagStep(
     val sniKind: String, // для TLS: «свой», «плохой», «белый», «сервера»; для TCP пусто
     val outcome: Outcome,
     val ms: Long,
-    val detail: String
+    val detail: String,
+    val value: Long = 0L // для загрузки: сколько байт получено
 )
 
 data class DiagReport(
@@ -75,7 +76,9 @@ data class DiagReport(
     val verdictText: String,
     val network: String,
     val operator: String,
-    val time: Long
+    val time: Long,
+    val flags: List<String> = emptyList(),
+    val mode: String = ""
 )
 
 const val GROUP_FOREIGN = "Зарубежные IP (вне белого списка)"
@@ -85,11 +88,11 @@ const val GROUP_OWN = "Ваш сервер"
 object DpiProbe {
     private const val CONNECT_MS = 4000
     private const val READ_MS = 5000
-    private const val TOTAL_MS = 30_000L
+    private const val TOTAL_MS = 45_000L
 
     // Отдельный scope для блокирующих сокетов (по образцу Scanner): зависший
     // поток не должен держать вызывающего.
-    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    internal val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // Нейтральные зарубежные IP с открытым 443 и родным SNI.
     private val foreignRefs = listOf(
@@ -134,13 +137,13 @@ object DpiProbe {
         }
     }
 
-    private fun shortErr(e: Throwable): String {
+    internal fun shortErr(e: Throwable): String {
         val m = e.message?.take(80)
         return if (m.isNullOrBlank()) e.javaClass.simpleName else "${e.javaClass.simpleName}: $m"
     }
 
     // DNS с потолком по времени (InetAddress.getByName сам таймаута не имеет).
-    private suspend fun resolve(host: String): String? {
+    internal suspend fun resolve(host: String): String? {
         // Литерал IPv4 разбирать через DNS не нужно.
         if (Regex("""\d{1,3}(\.\d{1,3}){3}""").matches(host)) return host
         val job = ioScope.async {
@@ -153,7 +156,7 @@ object DpiProbe {
         return withTimeoutOrNull(4000L) { job.await() }
     }
 
-    private fun tcpStep(group: String, target: String, ip: String, port: Int): DiagStep {
+    internal fun tcpStep(group: String, target: String, ip: String, port: Int): DiagStep {
         val t0 = System.currentTimeMillis()
         return try {
             Socket().use { it.connect(InetSocketAddress(ip, port), CONNECT_MS) }
@@ -163,7 +166,7 @@ object DpiProbe {
         }
     }
 
-    private fun tlsStep(
+    internal fun tlsStep(
         group: String, target: String, ip: String, port: Int, sni: String, kind: String
     ): DiagStep {
         val t0 = System.currentTimeMillis()
@@ -213,7 +216,7 @@ object DpiProbe {
     suspend fun run(own: List<OwnServer>, network: String, operator: String): DiagReport {
         if (network == "VPN" || network == "нет сети") {
             val (t, x) = verdict(emptyList(), network)
-            return DiagReport(emptyList(), t, x, network, operator, System.currentTimeMillis())
+            return DiagReport(emptyList(), t, x, network, operator, System.currentTimeMillis(), emptyList(), DpiExtra.modeOf(t))
         }
         val steps: List<DiagStep> = withTimeoutOrNull(TOTAL_MS) {
             coroutineScope {
@@ -240,11 +243,20 @@ object DpiProbe {
                         probeTarget(GROUP_OWN, o.label, o.host, o.port, snis)
                     }
                 }
+                for (t in DpiExtra.dlForeign) {
+                    jobs += async(Dispatchers.IO) { listOf(DpiExtra.download(DpiExtra.GROUP_DL_FOREIGN, t)) }
+                }
+                for (t in DpiExtra.dlRu) {
+                    jobs += async(Dispatchers.IO) { listOf(DpiExtra.download(DpiExtra.GROUP_DL_RU, t)) }
+                }
+                jobs += async { DpiExtra.udpAll() }
+                jobs += async { DpiExtra.sniPick(own) }
                 jobs.awaitAll().flatten()
             }
         } ?: emptyList()
         val (title, text) = verdict(steps, network)
-        return DiagReport(steps, title, text, network, operator, System.currentTimeMillis())
+        val analysis = DpiExtra.analyze(steps)
+        return DiagReport(steps, title, text, network, operator, System.currentTimeMillis(), analysis.flags, DpiExtra.modeOf(title))
     }
 
     // ---------- Вердикт ----------
@@ -376,15 +388,26 @@ object DpiProbe {
         sb.append("Глубокая диагностика $time\n")
         val net = if (r.operator.isNotBlank()) "${r.network} · ${r.operator}" else r.network
         sb.append("Сеть: $net\n")
-        sb.append("Вердикт: ${r.verdictTitle}\n${r.verdictText}\n\n")
+        sb.append("Вердикт: ${r.verdictTitle}\n${r.verdictText}\n")
+        if (r.flags.isNotEmpty()) {
+            sb.append("\nОсобенности:\n")
+            for (f in r.flags) sb.append("  • $f\n")
+        }
+        sb.append("\n")
         var group = ""
         for (s in r.steps) {
+            if (s.group.startsWith(DpiExtra.GROUP_SNI_PREFIX)) continue
             if (s.group != group) {
                 group = s.group
                 sb.append("[$group]\n")
             }
             val st = if (s.stage == "TLS") "TLS(${s.sniKind})" else s.stage
             sb.append("  ${s.target} $st: ${s.outcome} ${s.ms}мс — ${s.detail}\n")
+        }
+        val extra = DpiExtra.analyze(r.steps).lines
+        if (extra.isNotEmpty()) {
+            sb.append("\n[Дополнительно]\n")
+            for (l in extra) sb.append("  $l\n")
         }
         return sb.toString()
     }
@@ -417,7 +440,9 @@ fun startDiag(context: Context, scope: CoroutineScope) {
         try {
             val net = Scanner.networkType(context)
             val op = if (net == "мобильный интернет") Scanner.operatorName(context) else ""
-            DiagHolder.report = DpiProbe.run(OwnServers.list, net, op)
+            val r = DpiProbe.run(OwnServers.list, net, op)
+            DiagHolder.report = r
+            DiagHistory.record(context, r)
         } finally {
             DiagHolder.running = false
         }
@@ -466,6 +491,16 @@ fun DiagSummary() {
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
+            if (r != null) {
+                r.flags.take(4).forEach { f ->
+                    Text(
+                        "• $f",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
         }
     }
 }
@@ -544,7 +579,7 @@ fun DiagCard(scope: CoroutineScope, networkType: String, operator: String) {
                     )
 
                     var group = ""
-                    report.steps.forEach { s ->
+                    report.steps.filter { !it.group.startsWith(DpiExtra.GROUP_SNI_PREFIX) }.forEach { s ->
                         if (s.group != group) {
                             group = s.group
                             Text(
@@ -569,11 +604,31 @@ fun DiagCard(scope: CoroutineScope, networkType: String, operator: String) {
                                 modifier = Modifier.weight(1f)
                             )
                             Text(
-                                outcomeLabel(s.outcome) + if (s.outcome.reached()) " · ${s.ms} мс" else "",
+                                if (s.stage == "DL" || s.stage == "UDP") s.detail
+                                else outcomeLabel(s.outcome) + if (s.outcome.reached()) " · ${s.ms} мс" else "",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.End,
                                 modifier = Modifier.padding(start = 8.dp)
+                            )
+                        }
+                    }
+
+                    val extra = DpiExtra.analyze(report.steps).lines
+                    if (extra.isNotEmpty()) {
+                        Text(
+                            "Дополнительно",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 10.dp, bottom = 2.dp)
+                        )
+                        extra.forEach { l ->
+                            Text(
+                                l,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(vertical = 1.dp)
                             )
                         }
                     }
@@ -590,6 +645,41 @@ fun DiagCard(scope: CoroutineScope, networkType: String, operator: String) {
                         modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
                     ) {
                         Text("Отправить подробный отчёт")
+                    }
+                }
+                val hist = remember(report, expanded) {
+                    try { DiagHistory.readAll(context).takeLast(8).reversed() } catch (_: Exception) { emptyList<DiagHistory.Entry>() }
+                }
+                if (hist.isNotEmpty()) {
+                    Text(
+                        "История замеров",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 14.dp, bottom = 2.dp)
+                    )
+                    val fmt = remember { java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale("ru")) }
+                    hist.forEach { e ->
+                        Text(
+                            fmt.format(java.util.Date(e.time)) + " · " +
+                                (if (e.operator.isNotBlank()) e.operator else e.network) + " · " + e.title,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(vertical = 1.dp)
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, DiagHistory.exportText(context))
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Выгрузить историю"))
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+                    ) {
+                        Text("Выгрузить историю замеров")
                     }
                 }
                 if (report == null && !running) {

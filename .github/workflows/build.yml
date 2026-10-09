@@ -23,7 +23,15 @@ jobs:
           OWN_SW_SNI: ${{ secrets.OWN_SW_SNI }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace
+          set +e
+          ./gradlew assembleDebug --stacktrace 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E '^e: ' build.log | head -10 | while IFS= read -r line; do
+              echo "::error::${line//%/%25}"
+            done
+          fi
+          exit "$status"
       - name: Rename APK
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk WhiteListCheck-diag-debug.apk
