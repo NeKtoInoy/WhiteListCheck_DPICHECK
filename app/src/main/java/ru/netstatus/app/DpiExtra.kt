@@ -46,7 +46,7 @@ object DpiExtra {
     val dlForeign = listOf(
         DlTarget("Cloudflare", "https://speed.cloudflare.com/__down?bytes=262144", false),
         DlTarget("OVH (FR)", "https://proof.ovh.net/files/1Mb.dat", true),
-        DlTarget("Hetzner (DE)", "https://speed.hetzner.de/100MB.bin", true)
+        DlTarget("Hetzner (DE)", "https://fsn1-speed.hetzner.com/100MB.bin", true)
     )
     val dlRu = listOf(
         DlTarget("Яндекс", "https://ya.ru/", false)
@@ -268,7 +268,13 @@ object DpiExtra {
             flags += "Подбор SNI на $where: проходят ${ok.size} из ${sni.size}" +
                 (if (ok.isNotEmpty()) " (быстрее всех: " + ok.take(4).joinToString(", ") { it.sniKind } + ")" else "")
             lines += "SNI проходят: " + (if (ok.isEmpty()) "ни один" else ok.joinToString(", ") { it.sniKind })
-            lines += "SNI не проходят: " + (if (bad.isEmpty()) "нет" else bad.joinToString(", ") { it.sniKind })
+            lines += "SNI не проходят: " + (if (bad.isEmpty()) "нет" else bad.joinToString(", ") {
+                it.sniKind + " (" + when (it.outcome) {
+                    Outcome.RESET -> "RST"
+                    Outcome.TIMEOUT -> "тишина"
+                    else -> it.outcome.name.lowercase()
+                } + ")"
+            })
         }
         return Analysis(flags, lines)
     }
