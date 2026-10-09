@@ -213,50 +213,70 @@ object DpiProbe {
         listOf(tcp) + tls
     }
 
-    suspend fun run(own: List<OwnServer>, network: String, operator: String): DiagReport {
+    suspend fun run(own: List<OwnServer>, network: String, operator: String, light: Boolean = false): DiagReport {
         if (network == "VPN" || network == "нет сети") {
             val (t, x) = verdict(emptyList(), network)
             return DiagReport(emptyList(), t, x, network, operator, System.currentTimeMillis(), emptyList(), DpiExtra.modeOf(t))
         }
-        val steps: List<DiagStep> = withTimeoutOrNull(TOTAL_MS) {
+        // Результаты копятся по мере готовности: если общий потолок времени сработает,
+        // уже полученное не теряется.
+        val collected = java.util.concurrent.CopyOnWriteArrayList<DiagStep>()
+        withTimeoutOrNull(TOTAL_MS) {
             coroutineScope {
-                val jobs = mutableListOf<Deferred<List<DiagStep>>>()
                 for ((ip, name) in foreignRefs) {
-                    jobs += async {
-                        probeTarget(
-                            GROUP_FOREIGN, ip, ip, 443,
-                            listOf(name to "свой", DIAG_SNI_BLOCKED to "плохой", DIAG_SNI_WHITE to "белый")
+                    launch {
+                        collected.addAll(
+                            probeTarget(
+                                GROUP_FOREIGN, ip, ip, 443,
+                                listOf(name to "свой", DIAG_SNI_BLOCKED to "плохой", DIAG_SNI_WHITE to "белый")
+                            )
                         )
                     }
                 }
                 for (h in whiteRefs) {
-                    jobs += async {
-                        probeTarget(
-                            GROUP_WHITE, h, h, 443,
-                            listOf(h to "свой", DIAG_SNI_BLOCKED to "плохой")
+                    launch {
+                        collected.addAll(
+                            probeTarget(GROUP_WHITE, h, h, 443, listOf(h to "свой", DIAG_SNI_BLOCKED to "плохой"))
                         )
                     }
                 }
                 for (o in own) {
-                    jobs += async {
+                    launch {
                         val snis = if (o.sni.isNotBlank()) listOf(o.sni to "сервера") else emptyList()
-                        probeTarget(GROUP_OWN, o.label, o.host, o.port, snis)
+                        collected.addAll(probeTarget(GROUP_OWN, o.label, o.host, o.port, snis))
                     }
                 }
-                for (t in DpiExtra.dlForeign) {
-                    jobs += async(Dispatchers.IO) { listOf(DpiExtra.download(DpiExtra.GROUP_DL_FOREIGN, t)) }
+                launch { collected.addAll(DpiExtra.udpAll()) }
+                launch { collected.addAll(DpiExtra.dnsAll()) }
+                // Тяжёлые проверки (загрузка ~1 МБ, подбор SNI) пропускаются в лёгком режиме,
+                // которым пользуется фон, чтобы не жечь трафик и батарею.
+                if (!light) {
+                    for (t in DpiExtra.dlForeign) {
+                        launch(Dispatchers.IO) { collected.add(DpiExtra.download(DpiExtra.GROUP_DL_FOREIGN, t)) }
+                    }
+                    for (t in DpiExtra.dlRu) {
+                        launch(Dispatchers.IO) { collected.add(DpiExtra.download(DpiExtra.GROUP_DL_RU, t)) }
+                    }
+                    launch { collected.addAll(DpiExtra.sniPick(own)) }
                 }
-                for (t in DpiExtra.dlRu) {
-                    jobs += async(Dispatchers.IO) { listOf(DpiExtra.download(DpiExtra.GROUP_DL_RU, t)) }
-                }
-                jobs += async { DpiExtra.udpAll() }
-                jobs += async { DpiExtra.sniPick(own) }
-                jobs.awaitAll().flatten()
             }
-        } ?: emptyList()
+        }
+        // Порядок групп стабильный, внутри группы сохраняется порядок прихода.
+        val steps: List<DiagStep> = collected.toList().sortedBy { groupRank(it.group) }
         val (title, text) = verdict(steps, network)
         val analysis = DpiExtra.analyze(steps)
         return DiagReport(steps, title, text, network, operator, System.currentTimeMillis(), analysis.flags, DpiExtra.modeOf(title))
+    }
+
+    private fun groupRank(g: String): Int = when {
+        g == GROUP_FOREIGN -> 0
+        g == GROUP_WHITE -> 1
+        g == GROUP_OWN -> 2
+        g == DpiExtra.GROUP_DL_FOREIGN -> 3
+        g == DpiExtra.GROUP_DL_RU -> 4
+        g == DpiExtra.GROUP_UDP -> 5
+        g == DpiExtra.GROUP_DNS -> 6
+        else -> 7
     }
 
     // ---------- Вердикт ----------
@@ -323,8 +343,8 @@ object DpiProbe {
                             ". Это нормально для России: так работает чёрный список доменов. " +
                             "Он мешает вашему серверу, только если SNI вашего Reality похож на заблокированный." +
                             if (white2.isNotEmpty() && white2.any { it.outcome.reached() })
-                                " Российский SNI (${DIAG_SNI_WHITE}) на зарубежном IP проходит: подмена SNI " +
-                                "в этой сети не режется."
+                                " Российский SNI (${DIAG_SNI_WHITE}) на зарубежном IP проходит, но не все " +
+                                "российские домены так же: см. «Подбор SNI»."
                             else if (white2.isNotEmpty())
                                 " Российский SNI (${DIAG_SNI_WHITE}) на зарубежном IP тоже режется: " +
                                 "оператор проверяет связку IP + SNI."
@@ -492,7 +512,7 @@ fun DiagSummary() {
                 color = MaterialTheme.colorScheme.onSurface
             )
             if (r != null) {
-                r.flags.take(4).forEach { f ->
+                r.flags.take(6).forEach { f ->
                     Text(
                         "• $f",
                         style = MaterialTheme.typography.bodySmall,
@@ -604,7 +624,7 @@ fun DiagCard(scope: CoroutineScope, networkType: String, operator: String) {
                                 modifier = Modifier.weight(1f)
                             )
                             Text(
-                                if (s.stage == "DL" || s.stage == "UDP") s.detail
+                                if (s.stage == "DL" || s.stage == "UDP" || s.group == DpiExtra.GROUP_DNS) s.detail
                                 else outcomeLabel(s.outcome) + if (s.outcome.reached()) " · ${s.ms} мс" else "",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,

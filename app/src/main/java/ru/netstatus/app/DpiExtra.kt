@@ -18,6 +18,7 @@ import java.io.File
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.HttpURLConnection
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.SocketTimeoutException
 import java.net.URL
@@ -36,6 +37,7 @@ object DpiExtra {
     const val GROUP_DL_FOREIGN = "Загрузка 256 КБ: зарубежные серверы"
     const val GROUP_DL_RU = "Загрузка: российский эталон"
     const val GROUP_UDP = "UDP / QUIC (порт 443)"
+    const val GROUP_DNS = "DNS-разрешение"
     const val GROUP_SNI_PREFIX = "Подбор SNI на "
 
     private const val DL_LIMIT = 262_144L
@@ -190,6 +192,42 @@ object DpiExtra {
         }.awaitAll()
     }
 
+    // ---------- DNS ----------
+
+    internal suspend fun dnsAll(): List<DiagStep> = coroutineScope {
+        val names = listOf("ya.ru", "google.com", "www.instagram.com", "rutracker.org")
+        names.map { n ->
+            async(Dispatchers.IO) {
+                val t0 = System.currentTimeMillis()
+                val job = DpiProbe.ioScope.async {
+                    try {
+                        InetAddress.getAllByName(n).firstOrNull { it is Inet4Address }?.hostAddress
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                val ip = withTimeoutOrNull(4000L) { job.await() }
+                val ms = System.currentTimeMillis() - t0
+                if (ip == null)
+                    DiagStep(GROUP_DNS, n, "DNS", "", Outcome.DNS_FAIL, ms, "не разрешился")
+                else
+                    DiagStep(GROUP_DNS, n, "DNS", "", Outcome.OK, ms, ip)
+            }
+        }.awaitAll()
+    }
+
+    // Адрес из частных/служебных диапазонов в ответе на публичное имя = подмена DNS.
+    private fun isFakeIp(ip: String): Boolean {
+        if (ip.startsWith("0.") || ip.startsWith("127.") || ip.startsWith("10.") ||
+            ip.startsWith("192.168.") || ip.startsWith("169.254.")
+        ) return true
+        if (ip.startsWith("172.")) {
+            val second = ip.split(".").getOrNull(1)?.toIntOrNull() ?: return false
+            return second in 16..31
+        }
+        return false
+    }
+
     // ---------- Подбор SNI ----------
 
     internal suspend fun sniPick(own: List<OwnServer>): List<DiagStep> = coroutineScope {
@@ -223,7 +261,7 @@ object DpiExtra {
         val flags = mutableListOf<String>()
         val lines = mutableListOf<String>()
 
-        // Загрузка: информативны только OK / тишина / сброс (HTTP-ошибки не считаем).
+        // Загрузка: информативны только OK / тишина / сброс (HTTP-ошибки и DNS не считаем).
         fun informative(s: DiagStep) =
             s.outcome == Outcome.OK || s.outcome == Outcome.TIMEOUT || s.outcome == Outcome.RESET
         val dlF = steps.filter { it.group == GROUP_DL_FOREIGN && informative(it) }
@@ -240,7 +278,12 @@ object DpiExtra {
                 flags += head + classic + ru
                 lines += "Загрузка 256 КБ: обрыв у ${bad.size} из ${dlF.size} зарубежных серверов."
             } else {
-                lines += "Загрузка 256 КБ с зарубежных серверов проходит без обрывов."
+                lines += "Загрузка 256 КБ с зарубежных серверов проходит" +
+                    (if (bad.isEmpty()) " без обрывов." else ", кроме: " + bad.joinToString(", ") { it.target } + ".")
+                if (bad.isNotEmpty()) {
+                    flags += "Не отвечают отдельные серверы: " + bad.joinToString(", ") { it.target } +
+                        " (возможно, блокируется диапазон хостера)"
+                }
             }
         }
 
@@ -249,13 +292,31 @@ object DpiExtra {
         val uF = udp.filter { it.target != "Яндекс" }
         val uR = udp.filter { it.target == "Яндекс" }
         if (uF.isNotEmpty()) {
+            val uBad = uF.filter { it.outcome != Outcome.OK }
             if (uF.none { it.outcome == Outcome.OK }) {
                 flags += if (uR.any { it.outcome == Outcome.OK })
                     "UDP/QUIC: нет ответа от зарубежных адресов (от российских есть)"
                 else
                     "UDP/QUIC: нет ответа ни от зарубежных, ни от российских адресов"
+            } else if (uBad.isNotEmpty()) {
+                flags += "UDP/QUIC: нет ответа от " + uBad.joinToString(", ") { it.target }
+                lines += "UDP/QUIC до зарубежных адресов проходит частично."
             } else {
                 lines += "UDP/QUIC до зарубежных адресов проходит."
+            }
+        }
+
+        // DNS.
+        val dns = steps.filter { it.group == GROUP_DNS }
+        if (dns.isNotEmpty()) {
+            val failed = dns.filter { it.outcome != Outcome.OK }
+            val fake = dns.filter { it.outcome == Outcome.OK && isFakeIp(it.detail) }
+            if (failed.isNotEmpty()) flags += "DNS не отвечает для: " + failed.joinToString(", ") { it.target }
+            if (fake.isNotEmpty()) {
+                flags += "DNS подменяет ответ: " + fake.joinToString(", ") { it.target + " → " + it.detail }
+            }
+            lines += "DNS: " + dns.joinToString("; ") {
+                it.target + " " + (if (it.outcome == Outcome.OK) it.detail else "нет ответа")
             }
         }
 
@@ -263,18 +324,22 @@ object DpiExtra {
         val sni = steps.filter { it.group.startsWith(GROUP_SNI_PREFIX) && it.stage == "TLS" }
         if (sni.isNotEmpty()) {
             val where = sni.first().target
-            val ok = sni.filter { it.outcome.reached() }.sortedBy { it.ms }
-            val bad = sni.filter { !it.outcome.reached() }
-            flags += "Подбор SNI на $where: проходят ${ok.size} из ${sni.size}" +
-                (if (ok.isNotEmpty()) " (быстрее всех: " + ok.take(4).joinToString(", ") { it.sniKind } + ")" else "")
-            lines += "SNI проходят: " + (if (ok.isEmpty()) "ни один" else ok.joinToString(", ") { it.sniKind })
-            lines += "SNI не проходят: " + (if (bad.isEmpty()) "нет" else bad.joinToString(", ") {
-                it.sniKind + " (" + when (it.outcome) {
-                    Outcome.RESET -> "RST"
-                    Outcome.TIMEOUT -> "тишина"
-                    else -> it.outcome.name.lowercase()
-                } + ")"
-            })
+            val ok = sni.filter { it.outcome.reached() }.map { it.sniKind }
+            val silent = sni.filter { it.outcome == Outcome.TIMEOUT }.map { it.sniKind }
+            val rst = sni.filter { it.outcome == Outcome.RESET }.map { it.sniKind }
+            val other = sni.filter { !it.outcome.reached() && it.outcome != Outcome.TIMEOUT && it.outcome != Outcome.RESET }
+                .map { it.sniKind }
+            flags += "Подбор SNI на $where: проходят ${ok.size} из ${sni.size}"
+            val ruSilent = silent.filter { it.endsWith(".ru") }
+            if (ruSilent.size >= 3) {
+                flags += "Часть российских SNI молча отбрасывается на зарубежном IP (" +
+                    ruSilent.take(5).joinToString(", ") + (if (ruSilent.size > 5) "…" else "") +
+                    "): не берите их для Reality"
+            }
+            lines += "SNI проходят: " + (if (ok.isEmpty()) "ни один" else ok.joinToString(", "))
+            if (silent.isNotEmpty()) lines += "SNI режутся молча (тишина): " + silent.joinToString(", ")
+            if (rst.isNotEmpty()) lines += "SNI режутся сбросом (RST): " + rst.joinToString(", ")
+            if (other.isNotEmpty()) lines += "SNI, другие ошибки: " + other.joinToString(", ")
         }
         return Analysis(flags, lines)
     }
@@ -284,7 +349,7 @@ object DpiExtra {
     suspend fun runBackground(ctx: Context) {
         val net = Scanner.networkType(ctx)
         val op = if (net == "мобильный интернет") Scanner.operatorName(ctx) else ""
-        val r = DpiProbe.run(OwnServers.list, net, op)
+        val r = DpiProbe.run(OwnServers.list, net, op, light = true)
         val prev = DiagHistory.lastMode(ctx)
         DiagHistory.record(ctx, r)
         if (prev != null && r.mode != prev && r.mode in trackedModes) {
