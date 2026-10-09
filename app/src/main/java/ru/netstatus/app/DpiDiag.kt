@@ -17,6 +17,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.*
+import java.net.ConnectException
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -102,7 +103,10 @@ object DpiProbe {
     )
 
     // Российские эталоны: IP получаем через DNS.
-    private val whiteRefs = listOf("ya.ru", "vk.com")
+    private val whiteRefs = listOf(
+        "ya.ru" to "5.255.255.242",
+        "vk.com" to "87.240.137.164"
+    )
 
     // Принимаем любой сертификат: нам важно лишь, дошло ли рукопожатие.
     private val trustAll: Array<TrustManager> = arrayOf(object : X509TrustManager {
@@ -133,6 +137,8 @@ object DpiProbe {
             "reset" in s || "econnreset" in s || "closed by peer" in s || "broken pipe" in s ||
                 "epipe" in s || "unexpected end of stream" in s || "connection closed" in s ||
                 "eof" in s -> Outcome.RESET
+            // Соединение отклонено без подробностей (например, из HttpURLConnection).
+            e is ConnectException -> Outcome.REFUSED
             else -> Outcome.OTHER
         }
     }
@@ -197,9 +203,10 @@ object DpiProbe {
         target: String,
         host: String,
         port: Int,
-        snis: List<Pair<String, String>> // (SNI, вид)
+        snis: List<Pair<String, String>>, // (SNI, вид)
+        fallbackIp: String? = null // запасной IP на случай, если DNS не отвечает
     ): List<DiagStep> = coroutineScope {
-        val ip = resolve(host)
+        val ip = resolve(host) ?: fallbackIp
         if (ip == null) {
             return@coroutineScope listOf(
                 DiagStep(group, target, "DNS", "", Outcome.DNS_FAIL, 0L, "адрес не разрешился")
@@ -233,10 +240,14 @@ object DpiProbe {
                         )
                     }
                 }
-                for (h in whiteRefs) {
+                for ((h, fallback) in whiteRefs) {
                     launch {
                         collected.addAll(
-                            probeTarget(GROUP_WHITE, h, h, 443, listOf(h to "свой", DIAG_SNI_BLOCKED to "плохой"))
+                            probeTarget(
+                                GROUP_WHITE, h, h, 443,
+                                listOf(h to "свой", DIAG_SNI_BLOCKED to "плохой"),
+                                fallback
+                            )
                         )
                     }
                 }
@@ -316,16 +327,20 @@ object DpiProbe {
                     "Не открывается ни российский эталон, ни зарубежный. Возможна полная потеря связи " +
                     "или проблемы с DNS. Проверьте сигнал и повторите."
 
-            wOk && !fOk ->
-                if (majority(fTimeouts, fTcp.size))
-                    "Похоже на БЕЛЫЕ СПИСКИ (фильтр по IP)" to
-                        "Российские IP доступны, а TCP до нейтральных зарубежных IP не устанавливается " +
-                        "(таймаут). Это блокировка на уровне IP-адресов: смена SNI или транспорта не " +
-                        "поможет. Нужен вход (RU-сервер) с IP из белого списка."
-                else
-                    "Похоже на ограничение по IP со сбросом" to
-                        "Российские IP доступны, а соединения с зарубежными IP сбрасываются или " +
-                        "отклоняются. Это тоже фильтр на уровне IP/маршрутов, а не только DPI по SNI."
+            wOk && !fOk -> {
+                val rejected = fTcp.count {
+                    it.outcome == Outcome.REFUSED || it.outcome == Outcome.RESET || it.outcome == Outcome.UNREACHABLE
+                }
+                val how = when {
+                    majority(rejected, fTcp.size) -> "мгновенно отклоняются (отказ в соединении)"
+                    majority(fTimeouts, fTcp.size) -> "не устанавливаются (таймаут)"
+                    else -> "не устанавливаются"
+                }
+                "Похоже на БЕЛЫЕ СПИСКИ (фильтр по IP)" to
+                    "Российские IP доступны, а TCP до нейтральных зарубежных IP $how. Это блокировка " +
+                    "на уровне IP-адресов: смена SNI или транспорта не поможет. Нужен вход (RU-сервер) " +
+                    "с IP из белого списка."
+            }
 
             else -> {
                 // IP-фильтра не видно, смотрим на TLS.

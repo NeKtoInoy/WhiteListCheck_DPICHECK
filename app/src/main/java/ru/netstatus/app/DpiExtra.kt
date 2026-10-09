@@ -263,7 +263,8 @@ object DpiExtra {
 
         // Загрузка: информативны только OK / тишина / сброс (HTTP-ошибки и DNS не считаем).
         fun informative(s: DiagStep) =
-            s.outcome == Outcome.OK || s.outcome == Outcome.TIMEOUT || s.outcome == Outcome.RESET
+            s.outcome == Outcome.OK || s.outcome == Outcome.TIMEOUT || s.outcome == Outcome.RESET ||
+                s.outcome == Outcome.REFUSED
         val dlF = steps.filter { it.group == GROUP_DL_FOREIGN && informative(it) }
         val ruOk = steps.any { it.group == GROUP_DL_RU && it.outcome == Outcome.OK }
         if (dlF.isNotEmpty()) {
@@ -311,7 +312,12 @@ object DpiExtra {
         if (dns.isNotEmpty()) {
             val failed = dns.filter { it.outcome != Outcome.OK }
             val fake = dns.filter { it.outcome == Outcome.OK && isFakeIp(it.detail) }
-            if (failed.isNotEmpty()) flags += "DNS не отвечает для: " + failed.joinToString(", ") { it.target }
+            if (failed.isNotEmpty()) {
+                flags += "DNS не отвечает для: " + failed.joinToString(", ") { it.target } +
+                    (if (failed.size == dns.size)
+                        ". Если включён «Частный DNS» (dns.google и т. п.), он может блокироваться: верните «Автоматически»"
+                    else "")
+            }
             val slow = dns.filter { it.outcome == Outcome.OK && it.ms > 1500 }
             if (slow.isNotEmpty()) {
                 flags += "DNS оператора медленный (" + slow.joinToString(", ") { it.target + " " + it.ms + " мс" } +
