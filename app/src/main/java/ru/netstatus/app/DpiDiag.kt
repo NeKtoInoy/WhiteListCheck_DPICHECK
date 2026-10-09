@@ -300,14 +300,18 @@ object DpiProbe {
                 val white2 = foreign.filter { it.stage == "TLS" && it.sniKind == "белый" }
                 when {
                     majority(honestOk, honest.size) && majority(badFail, bad.size) ->
-                        "Похоже на DPI (фильтр по SNI)" to
-                            "TCP открывается и TLS с обычным SNI проходит, а с запрещённым SNI " +
-                            "(${DIAG_SNI_BLOCKED}) на тот же IP " +
+                        "Обычный режим: DPI режет только запрещённые SNI" to
+                            "Белых списков по IP нет: TCP до зарубежных адресов открывается, TLS с обычным " +
+                            "SNI проходит. Запрещённый SNI (${DIAG_SNI_BLOCKED}) на тот же IP " +
                             (if (badFailKinds.count { it == Outcome.RESET } * 2 >= badFailKinds.size)
-                                "приходит сброс (RST)" else "наступает тишина (обрыв без ответа)") +
-                            ". Помогут: другой SNI для Reality, XHTTP, порт 443." +
-                            if (white2.isNotEmpty() && white2.none { it.outcome.reached() })
-                                " Подмена SNI на белый домен (${DIAG_SNI_WHITE}) на постороннем IP тоже режется: " +
+                                "получает сброс (RST)" else "обрывается без ответа") +
+                            ". Это нормально для России: так работает чёрный список доменов. " +
+                            "Он мешает вашему серверу, только если SNI вашего Reality похож на заблокированный." +
+                            if (white2.isNotEmpty() && white2.any { it.outcome.reached() })
+                                " Российский SNI (${DIAG_SNI_WHITE}) на зарубежном IP проходит: подмена SNI " +
+                                "в этой сети не режется."
+                            else if (white2.isNotEmpty())
+                                " Российский SNI (${DIAG_SNI_WHITE}) на зарубежном IP тоже режется: " +
                                 "оператор проверяет связку IP + SNI."
                             else ""
 
