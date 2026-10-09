@@ -49,6 +49,10 @@ android {
 
         debug {
             isDebuggable = true
+            // Отдельный applicationId: диагностический форк ставится рядом
+            // с оригиналом и не конфликтует с его подписью.
+            applicationIdSuffix = ".diag"
+            versionNameSuffix = "-diag"
         }
     }
 

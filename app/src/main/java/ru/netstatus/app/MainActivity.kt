@@ -1144,6 +1144,8 @@ fun MainScreen(
                 item { GroupCard("Заблокированные в РФ (контроль)", state.groupC, expC) { expC = !expC } }
                 item { Footnote(whyExpanded) { whyExpanded = !whyExpanded } }
             }
+            // Глубокая диагностика (форк): DPI или белые списки.
+            item { DiagCard(scope, state.networkType, state.operator) }
             item { AppFooter(onOpenHelp, state.checkedAt) }
         }
     }
