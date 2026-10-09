@@ -14,6 +14,13 @@ jobs:
           distribution: temurin
           java-version: 17
       - name: Build debug APK
+        env:
+          OWN_RU_HOST: ${{ secrets.OWN_RU_HOST }}
+          OWN_RU_PORT: ${{ secrets.OWN_RU_PORT }}
+          OWN_RU_SNI: ${{ secrets.OWN_RU_SNI }}
+          OWN_SW_HOST: ${{ secrets.OWN_SW_HOST }}
+          OWN_SW_PORT: ${{ secrets.OWN_SW_PORT }}
+          OWN_SW_SNI: ${{ secrets.OWN_SW_SNI }}
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --stacktrace

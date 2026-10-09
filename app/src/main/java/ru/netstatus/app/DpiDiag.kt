@@ -207,7 +207,7 @@ object DpiProbe {
         listOf(tcp) + tls
     }
 
-    suspend fun run(ownHost: String, ownPort: Int, ownSni: String, network: String, operator: String): DiagReport {
+    suspend fun run(own: List<OwnServer>, network: String, operator: String): DiagReport {
         if (network == "VPN" || network == "нет сети") {
             val (t, x) = verdict(emptyList(), network)
             return DiagReport(emptyList(), t, x, network, operator, System.currentTimeMillis())
@@ -231,10 +231,10 @@ object DpiProbe {
                         )
                     }
                 }
-                if (ownHost.isNotBlank()) {
+                for (o in own) {
                     jobs += async {
-                        val snis = if (ownSni.isNotBlank()) listOf(ownSni to "сервера") else emptyList()
-                        probeTarget(GROUP_OWN, ownHost, ownHost, ownPort, snis)
+                        val snis = if (o.sni.isNotBlank()) listOf(o.sni to "сервера") else emptyList()
+                        probeTarget(GROUP_OWN, o.label, o.host, o.port, snis)
                     }
                 }
                 jobs.awaitAll().flatten()
@@ -329,36 +329,39 @@ object DpiProbe {
             }
         }
 
-        // Добавка про собственный сервер.
+        // Добавка про собственные серверы (по одному абзацу на каждый).
         if (own.isEmpty()) return base
-        val ownTcp = own.firstOrNull { it.stage == "TCP" || it.stage == "DNS" }
-        val ownTls = own.filter { it.stage == "TLS" }
-        val extra = when {
-            ownTcp == null -> ""
-            ownTcp.stage == "DNS" -> "Ваш сервер: адрес не разрешился (DNS)."
-            !ownTcp.outcome.reached() -> {
-                val kind = when (ownTcp.outcome) {
-                    Outcome.TIMEOUT -> "таймаут"
-                    Outcome.REFUSED -> "порт закрыт/отклонён"
-                    Outcome.RESET -> "сброс соединения"
-                    else -> "не открывается"
+        val lines = own.map { it.target }.distinct().mapNotNull { label ->
+            val mine = own.filter { it.target == label }
+            val ownTcp = mine.firstOrNull { it.stage == "TCP" || it.stage == "DNS" }
+            val ownTls = mine.filter { it.stage == "TLS" }
+            when {
+                ownTcp == null -> null
+                ownTcp.stage == "DNS" -> "$label: адрес не разрешился (DNS)."
+                !ownTcp.outcome.reached() -> {
+                    val kind = when (ownTcp.outcome) {
+                        Outcome.TIMEOUT -> "таймаут"
+                        Outcome.REFUSED -> "порт закрыт или отклонён"
+                        Outcome.RESET -> "сброс соединения"
+                        else -> "не открывается"
+                    }
+                    if (wOk && fOk)
+                        "$label: TCP не проходит ($kind), хотя остальной интернет доступен. " +
+                            "Похоже, блокируется именно этот IP или порт, либо сервер не отвечает."
+                    else
+                        "$label: TCP не проходит ($kind). При фильтре по IP это ожидаемо, " +
+                            "если адрес не в белом списке."
                 }
-                if (wOk && fOk)
-                    "Ваш сервер: TCP не проходит ($kind), хотя остальной интернет доступен. " +
-                        "Похоже, блокируется именно этот IP или порт (или сервер не отвечает)."
-                else
-                    "Ваш сервер: TCP не проходит ($kind). При фильтре по IP это ожидаемо, " +
-                        "если адрес не в белом списке."
+                ownTls.isNotEmpty() && ownTls.none { it.outcome.reached() } ->
+                    "$label: TCP открывается, но TLS-рукопожатие обрывается (" +
+                        (if (ownTls.first().outcome == Outcome.RESET) "RST" else "тишина") +
+                        "). Похоже, DPI режет соединение к серверу: нужен другой SNI или транспорт XHTTP."
+                else ->
+                    "$label: TCP и TLS проходят, сеть сервер не режет " +
+                        "(это не гарантирует, что VLESS работает, но на этих уровнях блокировки нет)."
             }
-            ownTls.isNotEmpty() && ownTls.none { it.outcome.reached() } ->
-                "Ваш сервер: TCP открывается, но TLS-рукопожатие обрывается (" +
-                    (if (ownTls.first().outcome == Outcome.RESET) "RST" else "тишина") +
-                    "). Похоже, DPI режет соединение к серверу. Попробуйте другой SNI или транспорт XHTTP."
-            else ->
-                "Ваш сервер: TCP и TLS проходят. На этих уровнях блокировки нет " +
-                    "(это не гарантирует, что VLESS работает, но сеть вас не режет)."
         }
-        return if (extra.isEmpty()) base else base.first to (base.second + "\n\n" + extra)
+        return if (lines.isEmpty()) base else base.first to (base.second + "\n\n" + lines.joinToString("\n"))
     }
 
     // ---------- Текстовый отчёт ----------
@@ -389,42 +392,79 @@ object DpiProbe {
 object DiagHolder {
     var report by mutableStateOf<DiagReport?>(null)
     var running by mutableStateOf(false)
+    var expanded by mutableStateOf(false)
 }
 
-// Запуск диагностики с сохранёнными настройками сервера. Вызывается
-// автоматически вместе с основной проверкой и кнопкой «Повторить».
+// Серверы владельца. IP, порт и SNI подставляются при сборке (секреты CI),
+// в исходниках репозитория их нет. В отчётах показывается только метка.
+data class OwnServer(val label: String, val host: String, val port: Int, val sni: String)
+
+object OwnServers {
+    val list: List<OwnServer> = listOf(
+        OwnServer("RU-1", BuildConfig.OWN_RU_HOST, BuildConfig.OWN_RU_PORT.toIntOrNull() ?: 443, BuildConfig.OWN_RU_SNI),
+        OwnServer("SW-1", BuildConfig.OWN_SW_HOST, BuildConfig.OWN_SW_PORT.toIntOrNull() ?: 443, BuildConfig.OWN_SW_SNI)
+    ).filter { it.host.isNotBlank() }
+}
+
+// Запуск диагностики. Вызывается автоматически вместе с основной проверкой.
 fun startDiag(context: Context, scope: CoroutineScope) {
     if (DiagHolder.running) return
-    val prefs = context.getSharedPreferences("netstatus", Context.MODE_PRIVATE)
-    val host = prefs.getString("diag_host", "")?.trim().orEmpty()
-    val port = prefs.getString("diag_port", "443")?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 443
-    val sni = prefs.getString("diag_sni", "")?.trim().orEmpty()
     DiagHolder.running = true
     scope.launch {
         try {
             val net = Scanner.networkType(context)
             val op = if (net == "мобильный интернет") Scanner.operatorName(context) else ""
-            DiagHolder.report = DpiProbe.run(host, port, sni, net, op)
+            DiagHolder.report = DpiProbe.run(OwnServers.list, net, op)
         } finally {
             DiagHolder.running = false
         }
     }
 }
 
-// Короткая строка-итог под главным вердиктом.
+// Короткая пометка о режиме сети для главного экрана.
+fun DiagReport.modeLine(): String = when {
+    verdictTitle.startsWith("Похоже на БЕЛЫЕ") ->
+        "Белые списки: открываются российские адреса, зарубежные нет (фильтр по IP)."
+    verdictTitle.startsWith("Похоже на ограничение по IP") ->
+        "Зарубежные адреса сбрасываются: похоже на фильтр по IP."
+    verdictTitle.startsWith("Обычный режим") ->
+        "Обычный режим: белых списков нет, DPI режет только запрещённые домены."
+    verdictTitle.startsWith("Режется сам TLS") ->
+        "DPI: режется даже обычный защищённый трафик."
+    verdictTitle.startsWith("IP-фильтра") ->
+        "Ограничений по IP и SNI не видно."
+    verdictTitle.startsWith("Нет выхода") ->
+        "Нет выхода наружу: проверьте сигнал и повторите."
+    verdictTitle.startsWith("Отключите VPN") ->
+        "Выключите VPN: с ним сеть оператора не проверить."
+    else -> verdictTitle
+}
+
+// Пометка о режиме сети под главным вердиктом.
 @Composable
 fun DiagSummary() {
     val r = DiagHolder.report
     val running = DiagHolder.running
     if (r == null && !running) return
-    Text(
-        if (running) "Диагностика: проверяю…" else "Диагностика: ${r!!.verdictTitle}",
-        style = MaterialTheme.typography.bodyMedium,
-        fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.onBackground,
-        textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-    )
+    Surface(
+        Modifier.fillMaxWidth().padding(top = 8.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+            Text(
+                "Режим сети",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                if (running && r == null) "проверяю…" else r!!.modeLine(),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
 }
 
 // ---------- Интерфейс ----------
@@ -440,164 +480,122 @@ private fun outcomeLabel(o: Outcome): String = when (o) {
     Outcome.OTHER -> "ошибка"
 }
 
+// Сворачиваемая карточка «Подробнее»: этапы TCP/TLS, пояснение и отправка отчёта.
 @Composable
 fun DiagCard(scope: CoroutineScope, networkType: String, operator: String) {
     val context = LocalContext.current
-    val prefs = remember { context.getSharedPreferences("netstatus", Context.MODE_PRIVATE) }
-    var host by rememberSaveable { mutableStateOf(prefs.getString("diag_host", "") ?: "") }
-    var port by rememberSaveable { mutableStateOf(prefs.getString("diag_port", "443") ?: "443") }
-    var sni by rememberSaveable { mutableStateOf(prefs.getString("diag_sni", "") ?: "") }
     val report = DiagHolder.report
     val running = DiagHolder.running
-
-    fun start() {
-        val p = port.trim().toIntOrNull()?.takeIf { it in 1..65535 } ?: 443
-        prefs.edit()
-            .putString("diag_host", host.trim())
-            .putString("diag_port", p.toString())
-            .putString("diag_sni", sni.trim())
-            .apply()
-        startDiag(context, scope)
-    }
+    val expanded = DiagHolder.expanded
 
     Surface(
         Modifier.fillMaxWidth().padding(top = 12.dp),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceVariant
     ) {
-        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-            Text(
-                "Глубокая диагностика: DPI или белые списки?",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                "Запускается сама вместе с проверкой. Смотрит, на каком этапе рвётся соединение: " +
-                    "TCP до IP (белые списки) или TLS по SNI (DPI). Нужен выключенный VPN.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Свой сервер: заполните один раз, дальше проверяется само (необязательно)",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
-                OutlinedTextField(
-                    value = host,
-                    onValueChange = { host = it },
-                    label = { Text("IP или домен") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(Modifier.width(8.dp))
-                OutlinedTextField(
-                    value = port,
-                    onValueChange = { port = it.filter { c -> c.isDigit() }.take(5) },
-                    label = { Text("Порт") },
-                    singleLine = true,
-                    modifier = Modifier.width(96.dp)
-                )
-            }
-            OutlinedTextField(
-                value = sni,
-                onValueChange = { sni = it },
-                label = { Text("SNI сервера (например amazon.com)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
-            )
-
-            Button(
-                onClick = { start() },
-                enabled = !running,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth().padding(top = 10.dp).height(48.dp)
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .tvFocusHighlight()
+                    .clickable { DiagHolder.expanded = !DiagHolder.expanded }
             ) {
-                Text(
-                    if (running) "Диагностика…" else if (report != null) "Повторить диагностику" else "Запустить диагностику",
-                    fontWeight = FontWeight.SemiBold
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Подробнее: что именно проверялось",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        if (running) "проверка…" else if (report == null) "ещё не запускалась" else "этапы TCP и TLS",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(
+                    if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                    contentDescription = if (expanded) "Свернуть" else "Развернуть",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            if (running) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
-            }
+            if (expanded) {
+                if (running) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
+                }
+                if (report != null && !running) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        report.verdictTitle,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        report.verdictText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
 
-            if (networkType == "VPN" && report == null) {
-                Text(
-                    "Сейчас включён VPN: результат будет неточным.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(top = 8.dp)
-                )
-            }
-
-            if (report != null && !running) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    report.verdictTitle,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    report.verdictText,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-
-                var group = ""
-                report.steps.forEach { s ->
-                    if (s.group != group) {
-                        group = s.group
-                        Text(
-                            group,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 10.dp, bottom = 2.dp)
-                        )
+                    var group = ""
+                    report.steps.forEach { s ->
+                        if (s.group != group) {
+                            group = s.group
+                            Text(
+                                group,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 10.dp, bottom = 2.dp)
+                            )
+                        }
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            StatusBadge(s.outcome.reached())
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                s.target + " · " +
+                                    (if (s.stage == "TLS") "TLS (SNI ${s.sniKind})" else s.stage),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                outcomeLabel(s.outcome) + if (s.outcome.reached()) " · ${s.ms} мс" else "",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.End,
+                                modifier = Modifier.padding(start = 8.dp)
+                            )
+                        }
                     }
-                    Row(
-                        Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically
+
+                    OutlinedButton(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, DpiProbe.reportText(report))
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Отправить отчёт"))
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
                     ) {
-                        StatusBadge(s.outcome.reached())
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            s.target + " · " +
-                                (if (s.stage == "TLS") "TLS (SNI ${s.sniKind})" else s.stage),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Text(
-                            outcomeLabel(s.outcome) + if (s.outcome.reached()) " · ${s.ms} мс" else "",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.End,
-                            modifier = Modifier.padding(start = 8.dp)
-                        )
+                        Text("Отправить подробный отчёт")
                     }
                 }
-
-                OutlinedButton(
-                    onClick = {
-                        val intent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_TEXT, DpiProbe.reportText(report))
-                        }
-                        context.startActivity(Intent.createChooser(intent, "Отправить отчёт"))
-                    },
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
-                ) {
-                    Text("Отправить подробный отчёт")
+                if (report == null && !running) {
+                    Text(
+                        "Запустится вместе с проверкой. Нужен выключенный VPN.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
                 }
             }
         }

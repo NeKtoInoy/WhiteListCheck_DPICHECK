@@ -5,6 +5,11 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Параметры серверов подставляются при сборке (gradle -P или переменные окружения CI).
+// В репозитории их нет. Пустое значение = сервер не проверяется.
+fun cfg(name: String): String =
+    (project.findProperty(name)?.toString() ?: System.getenv(name) ?: "").replace("\"", "")
+
 android {
     namespace = "ru.netstatus.app"
     compileSdk = 36
@@ -33,6 +38,9 @@ android {
         targetSdk = 36
         versionCode = 17
         versionName = "0.5.5"
+        for (n in listOf("OWN_RU_HOST", "OWN_RU_PORT", "OWN_RU_SNI", "OWN_SW_HOST", "OWN_SW_PORT", "OWN_SW_SNI")) {
+            buildConfigField("String", n, "\"" + cfg(n) + "\"")
+        }
     }
 
     dependenciesInfo {
@@ -56,7 +64,10 @@ android {
         }
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
 
     compileOptions {
