@@ -129,7 +129,7 @@ object DpiExtra {
             }
             val speed = if (ms > 0) total * 1000 / ms / 1024 else 0L
             val sec = String.format(java.util.Locale.US, "%.1f", ms / 1000.0)
-            return DiagStep(group, t.label, "DL", "", Outcome.OK, ms, "получено $kb КБ за $sec с (≈$speed КБ/с)", total)
+            return DiagStep(group, t.label, "DL", "", Outcome.OK, ms, "получено $kb КБ за $sec с (≈$speed КБ/с, ориентир при параллельной нагрузке)", total)
         } catch (e: Exception) {
             return DiagStep(
                 group, t.label, "DL", "", DpiProbe.classify(e),
@@ -312,6 +312,11 @@ object DpiExtra {
             val failed = dns.filter { it.outcome != Outcome.OK }
             val fake = dns.filter { it.outcome == Outcome.OK && isFakeIp(it.detail) }
             if (failed.isNotEmpty()) flags += "DNS не отвечает для: " + failed.joinToString(", ") { it.target }
+            val slow = dns.filter { it.outcome == Outcome.OK && it.ms > 1500 }
+            if (slow.isNotEmpty()) {
+                flags += "DNS оператора медленный (" + slow.joinToString(", ") { it.target + " " + it.ms + " мс" } +
+                    "): попробуйте «Частный DNS» dns.google"
+            }
             if (fake.isNotEmpty()) {
                 flags += "DNS подменяет ответ: " + fake.joinToString(", ") { it.target + " → " + it.detail }
             }
@@ -332,7 +337,7 @@ object DpiExtra {
             flags += "Подбор SNI на $where: проходят ${ok.size} из ${sni.size}"
             val ruSilent = silent.filter { it.endsWith(".ru") }
             if (ruSilent.size >= 3) {
-                flags += "Часть российских SNI молча отбрасывается на зарубежном IP (" +
+                flags += "Часть российских SNI молча отбрасывается на $where (" +
                     ruSilent.take(5).joinToString(", ") + (if (ruSilent.size > 5) "…" else "") +
                     "): не берите их для Reality"
             }
@@ -413,9 +418,10 @@ object DiagHistory {
             o.put("steps", st)
             val f = File(ctx.filesDir, FILE)
             f.appendText(o.toString() + "\n")
-            val lines = f.readLines()
-            if (lines.size > MAX + 200) {
-                f.writeText(lines.takeLast(MAX).joinToString("\n") + "\n")
+            // Подрезаем журнал только когда файл вырос (дёшево по размеру, без чтения каждый раз).
+            if (f.length() > 4_000_000L) {
+                val lines = f.readLines()
+                f.writeText(lines.takeLast(MAX / 2).joinToString("\n") + "\n")
             }
             if (r.mode in tracked) {
                 ctx.getSharedPreferences("netstatus", Context.MODE_PRIVATE)
@@ -428,12 +434,12 @@ object DiagHistory {
         ctx.getSharedPreferences("netstatus", Context.MODE_PRIVATE).getString("last_diag_mode", null)
 
     @Synchronized
-    fun readAll(ctx: Context): List<Entry> {
+    fun readLast(ctx: Context, n: Int): List<Entry> {
         val f = File(ctx.filesDir, FILE)
         if (!f.exists()) return emptyList()
         val out = mutableListOf<Entry>()
         try {
-            for (line in f.readLines()) {
+            for (line in f.readLines().filter { it.isNotBlank() }.takeLast(n)) {
                 if (line.isBlank()) continue
                 try {
                     val o = JSONObject(line)

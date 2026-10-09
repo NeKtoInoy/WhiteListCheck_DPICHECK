@@ -153,7 +153,7 @@ object DpiProbe {
                 null
             }
         }
-        return withTimeoutOrNull(4000L) { job.await() }
+        return withTimeoutOrNull(6000L) { job.await() }
     }
 
     internal fun tcpStep(group: String, target: String, ip: String, port: Int): DiagStep {
@@ -300,12 +300,14 @@ object DpiProbe {
         val white = steps.filter { it.group == GROUP_WHITE }
         val own = steps.filter { it.group == GROUP_OWN }
 
-        // TCP-этап: DNS-сбой тоже считаем отдельным «не дошли».
-        fun tcp(list: List<DiagStep>) = list.filter { it.stage == "TCP" || it.stage == "DNS" }
+        // Считаем только TCP-этап. Если российские эталоны не удалось даже разрешить
+        // через DNS (TCP-шагов нет), сравнивать не с чем: считаем их такими же, как
+        // зарубежные, чтобы медленный DNS не выдавал себя за потерю связи.
+        fun tcp(list: List<DiagStep>) = list.filter { it.stage == "TCP" }
         val fTcp = tcp(foreign)
         val wTcp = tcp(white)
-        val fOk = majority(fTcp.count { it.outcome.reached() && it.stage == "TCP" }, fTcp.size)
-        val wOk = majority(wTcp.count { it.outcome.reached() && it.stage == "TCP" }, wTcp.size)
+        val fOk = majority(fTcp.count { it.outcome.reached() }, fTcp.size)
+        val wOk = if (wTcp.isEmpty()) fOk else majority(wTcp.count { it.outcome.reached() }, wTcp.size)
         val fTimeouts = fTcp.count { it.outcome == Outcome.TIMEOUT }
 
         val base: Pair<String, String> = when {
@@ -336,7 +338,7 @@ object DpiProbe {
                 when {
                     majority(honestOk, honest.size) && majority(badFail, bad.size) ->
                         "Обычный режим: DPI режет только запрещённые SNI" to
-                            "Белых списков по IP нет: TCP до зарубежных адресов открывается, TLS с обычным " +
+                            "Признаков белых списков по IP не видно: TCP до зарубежных адресов открывается, TLS с обычным " +
                             "SNI проходит. Запрещённый SNI (${DIAG_SNI_BLOCKED}) на тот же IP " +
                             (if (badFailKinds.count { it == Outcome.RESET } * 2 >= badFailKinds.size)
                                 "получает сброс (RST)" else "обрывается без ответа") +
@@ -462,7 +464,7 @@ fun startDiag(context: Context, scope: CoroutineScope) {
             val op = if (net == "мобильный интернет") Scanner.operatorName(context) else ""
             val r = DpiProbe.run(OwnServers.list, net, op)
             DiagHolder.report = r
-            DiagHistory.record(context, r)
+            withContext(Dispatchers.IO) { DiagHistory.record(context, r) }
         } finally {
             DiagHolder.running = false
         }
@@ -667,8 +669,11 @@ fun DiagCard(scope: CoroutineScope, networkType: String, operator: String) {
                         Text("Отправить подробный отчёт")
                     }
                 }
-                val hist = remember(report, expanded) {
-                    try { DiagHistory.readAll(context).takeLast(8).reversed() } catch (_: Exception) { emptyList<DiagHistory.Entry>() }
+                var hist by remember { mutableStateOf<List<DiagHistory.Entry>>(emptyList()) }
+                LaunchedEffect(report) {
+                    hist = withContext(Dispatchers.IO) {
+                        try { DiagHistory.readLast(context, 8).reversed() } catch (_: Exception) { emptyList<DiagHistory.Entry>() }
+                    }
                 }
                 if (hist.isNotEmpty()) {
                     Text(
